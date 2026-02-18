@@ -1,0 +1,63 @@
+{
+  "version": "1.0.0",
+  "repository": {
+    "name": "_ARCHIVE_2026",
+    "owner": "Infinity-X-One-Systems",
+    "remote": "origin",
+    "defaultBranch": "main"
+  },
+  "sync": {
+    "mode": "bidirectional",
+    "strategy": "merge",
+    "conflictResolution": "remote-first",
+    "autoCommit": true,
+    "autoPush": true,
+    "frequency": {
+      "enabled": true,
+      "schedule": "0 * * * *",
+      "description": "Hourly sync"
+    }
+  },
+  "paths": {
+    "include": ["*"],
+    "exclude": [
+      ".git",
+      "node_modules",
+      "*.log",
+      "tmp",
+      ".env",
+      ".env.local",
+      "dist",
+      "build",
+      ".DS_Store",
+      "Thumbs.db"
+    ]
+  },
+  "notifications": {
+    "enabled": true,
+    "onSuccess": false,
+    "onFailure": true,
+    "methods": ["github-issue", "console"]
+  },
+  "security": {
+    "requireSignedCommits": false,
+    "enforceProtectedBranches": true,
+    "protectedBranches": ["main", "master", "develop"],
+    "allowForcePush": false
+  },
+  "logging": {
+    "enabled": true,
+    "level": "info",
+    "destination": ".infinity/sync.log",
+    "maxSize": "10MB",
+    "retention": "30d"
+  },
+  "advanced": {
+    "maxRetries": 3,
+    "retryDelay": 5,
+    "timeout": 300,
+    "pruneRemote": false,
+    "fetchTags": true,
+    "deepClone": false
+  }
+}
