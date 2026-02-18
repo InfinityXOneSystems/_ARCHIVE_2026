@@ -40,6 +40,10 @@ jobs:
   detect-changes:
     name: Detect Remote Changes
     runs-on: ubuntu-latest
+    
+    permissions:
+      contents: read
+    
     outputs:
       has_changes: ${{ steps.check.outputs.has_changes }}
       behind_count: ${{ steps.check.outputs.behind_count }}
@@ -266,6 +270,9 @@ jobs:
     needs: bidirectional-sync
     if: always()
     runs-on: ubuntu-latest
+    
+    permissions:
+      contents: read
     
     steps:
       - name: 📊 Report Health Status
