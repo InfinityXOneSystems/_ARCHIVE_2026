@@ -213,8 +213,10 @@ function Update-ActiveMemory {
             # Update last sync time
             $content = $content -replace "Last Sync:.*", "Last Sync:** $timestamp ($Operation) $statusIcon"
             
-            # Add to activity log
-            $logEntry = "`n$($content.Count + 1). **$timestamp:** $Operation - $(if($Success){'Success'}else{'Failed'})"
+            # Count existing activity log entries and add new one
+            $existingEntries = ([regex]::Matches($content, '^\d+\.\s+\*\*', 'Multiline')).Count
+            $nextNumber = $existingEntries + 1
+            $logEntry = "`n$nextNumber. **$timestamp:** $Operation - $(if($Success){'Success'}else{'Failed'})"
             $content = $content -replace "(\*This file is)", "$logEntry`n`n`$1"
             
             Set-Content -Path $memoryFile -Value $content -NoNewline
