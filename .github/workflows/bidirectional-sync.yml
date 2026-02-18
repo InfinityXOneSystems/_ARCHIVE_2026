@@ -183,29 +183,27 @@ jobs:
             sed -i "s/Total Syncs:.*/Total Syncs:** $NEW_COUNT/" "$MEMORY_FILE"
             
             # Add activity log entry
-            ACTIVITY="$(date '+%Y-%m-%d'): Bidirectional sync completed (Branch: $BRANCH)"
+            ACTIVITY="$(date '+%Y-%m-%d') Bidirectional sync completed (Branch $BRANCH)"
             sed -i "/## 🔄 Recent Activity Log/a\\$((NEW_COUNT)). **$ACTIVITY**" "$MEMORY_FILE"
             
-            echo "✓ Metadata updated"
+            echo "Metadata updated successfully"
           fi
           
           # Create sync log
           mkdir -p .infinity/logs
-          LOG_FILE=".infinity/logs/sync-$(date '+%Y%m%d-%H%M%S').log"
-          cat > "$LOG_FILE" << EOF
-          Sync Log - $TIMESTAMP
+          LOG_NAME="sync-$(date '+%Y%m%d-%H%M%S').log"
+          cat > ".infinity/logs/$LOG_NAME" << 'SYNCLOG'
+          Sync Log
           ═══════════════════════════════════════
-          Branch: $BRANCH
-          Event: ${{ github.event_name }}
-          Pull Status: ${{ steps.pull.outputs.status }}
-          Push Status: ${{ steps.push.outputs.status }}
-          Behind: ${{ needs.detect-changes.outputs.behind_count }}
-          Ahead: ${{ needs.detect-changes.outputs.ahead_count }}
-          Workflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          ═══════════════════════════════════════
-EOF
+          SYNCLOG
           
-          echo "✓ Sync log created: $LOG_FILE"
+          # Append dynamic content
+          echo "Branch: ${{ github.event.inputs.target_branch || github.ref_name }}" >> ".infinity/logs/$LOG_NAME"
+          echo "Event: ${{ github.event_name }}" >> ".infinity/logs/$LOG_NAME"
+          echo "Pull Status: ${{ steps.pull.outputs.status }}" >> ".infinity/logs/$LOG_NAME"
+          echo "Push Status: ${{ steps.push.outputs.status }}" >> ".infinity/logs/$LOG_NAME"
+          
+          echo "Sync log created successfully"
       
       - name: 💾 Commit Metadata Updates
         if: always()
