@@ -1,0 +1,288 @@
+name: Bidirectional Live Sync
+
+on:
+  # Trigger on any push
+  push:
+    branches:
+      - '**'
+  
+  # Trigger on pull request
+  pull_request:
+    types: [opened, synchronize, reopened]
+  
+  # Watch for remote changes (every 15 minutes)
+  schedule:
+    - cron: '*/15 * * * *'  # Every 15 minutes
+  
+  # Manual trigger for immediate sync
+  workflow_dispatch:
+    inputs:
+      target_branch:
+        description: 'Target branch to sync'
+        required: false
+        default: ''
+      force_sync:
+        description: 'Force sync even with conflicts'
+        required: false
+        default: false
+        type: boolean
+
+# Only allow one sync per branch at a time
+concurrency:
+  group: bidirectional-sync-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  SYNC_CONFIG: .infinity/sync-config.json
+  MEMORY_FILE: .infinity/ACTIVE_MEMORY.md
+
+jobs:
+  detect-changes:
+    name: Detect Remote Changes
+    runs-on: ubuntu-latest
+    outputs:
+      has_changes: ${{ steps.check.outputs.has_changes }}
+      behind_count: ${{ steps.check.outputs.behind_count }}
+      ahead_count: ${{ steps.check.outputs.ahead_count }}
+    
+    steps:
+      - name: 🔐 Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: 🔍 Check for Changes
+        id: check
+        run: |
+          git fetch origin
+          
+          CURRENT_BRANCH="${{ github.event.inputs.target_branch || github.ref_name }}"
+          
+          # Count commits behind/ahead
+          BEHIND=$(git rev-list HEAD..origin/$CURRENT_BRANCH --count 2>/dev/null || echo "0")
+          AHEAD=$(git rev-list origin/$CURRENT_BRANCH..HEAD --count 2>/dev/null || echo "0")
+          
+          echo "behind_count=$BEHIND" >> $GITHUB_OUTPUT
+          echo "ahead_count=$AHEAD" >> $GITHUB_OUTPUT
+          
+          if [[ $BEHIND -gt 0 ]] || [[ $AHEAD -gt 0 ]]; then
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+            echo "::notice::Changes detected - Behind: $BEHIND, Ahead: $AHEAD"
+          else
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+            echo "::notice::No changes detected"
+          fi
+
+  bidirectional-sync:
+    name: Execute Bidirectional Sync
+    needs: detect-changes
+    if: needs.detect-changes.outputs.has_changes == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    
+    permissions:
+      contents: write
+      pull-requests: write
+    
+    steps:
+      - name: 🔐 Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: 🔧 Configure Git Identity
+        run: |
+          git config user.name "Infinity Orchestrator Bot"
+          git config user.email "bot@infinityxone.systems"
+      
+      - name: 📊 Sync Analysis
+        run: |
+          BRANCH="${{ github.event.inputs.target_branch || github.ref_name }}"
+          
+          echo "::group::Sync Analysis"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "📍 Branch: $BRANCH"
+          echo "📥 Behind: ${{ needs.detect-changes.outputs.behind_count }} commits"
+          echo "📤 Ahead: ${{ needs.detect-changes.outputs.ahead_count }} commits"
+          echo "🔄 Sync Mode: Bidirectional"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "::endgroup::"
+      
+      - name: 📥 Pull Remote Changes
+        id: pull
+        run: |
+          BRANCH="${{ github.event.inputs.target_branch || github.ref_name }}"
+          
+          echo "Pulling changes from origin/$BRANCH..."
+          
+          if git pull origin $BRANCH --rebase --autostash; then
+            echo "status=success" >> $GITHUB_OUTPUT
+            echo "✅ Pull successful"
+          else
+            echo "status=conflict" >> $GITHUB_OUTPUT
+            echo "::warning::Pull resulted in conflicts"
+            
+            # Attempt to resolve conflicts automatically
+            if [[ "${{ github.event.inputs.force_sync }}" == "true" ]]; then
+              echo "Force sync enabled, using ours strategy..."
+              git checkout --ours .
+              git add .
+              git rebase --continue || git rebase --skip
+              echo "status=resolved" >> $GITHUB_OUTPUT
+            else
+              echo "::error::Conflicts detected, aborting. Use force_sync to override."
+              git rebase --abort
+              exit 1
+            fi
+          fi
+      
+      - name: 🔍 Verify Local State
+        run: |
+          echo "::group::Local State"
+          git status
+          git log -3 --oneline
+          echo "::endgroup::"
+      
+      - name: 📤 Push Local Changes
+        id: push
+        run: |
+          BRANCH="${{ github.event.inputs.target_branch || github.ref_name }}"
+          
+          # Check if there are any local changes to push
+          if [[ -n "$(git status --porcelain)" ]]; then
+            echo "Committing local changes..."
+            git add .
+            git commit -m "chore: bidirectional sync - merge remote changes [skip ci]" || true
+          fi
+          
+          echo "Pushing to origin/$BRANCH..."
+          
+          if git push origin $BRANCH; then
+            echo "status=success" >> $GITHUB_OUTPUT
+            echo "✅ Push successful"
+          else
+            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "::error::Push failed"
+            exit 1
+          fi
+      
+      - name: 📝 Update Sync Metadata
+        if: always()
+        run: |
+          TIMESTAMP=$(date -u '+%Y-%m-%d %H:%M:%S UTC')
+          BRANCH="${{ github.event.inputs.target_branch || github.ref_name }}"
+          
+          # Update ACTIVE_MEMORY.md
+          if [[ -f "$MEMORY_FILE" ]]; then
+            # Update last sync time
+            sed -i "s/Last Sync:.*/Last Sync:** $TIMESTAMP (BIDIRECTIONAL) ✅/" "$MEMORY_FILE"
+            
+            # Update sync count
+            CURRENT_COUNT=$(grep -oP "Total Syncs:\*\* \K\d+" "$MEMORY_FILE" || echo "0")
+            NEW_COUNT=$((CURRENT_COUNT + 1))
+            sed -i "s/Total Syncs:.*/Total Syncs:** $NEW_COUNT/" "$MEMORY_FILE"
+            
+            # Add activity log entry
+            ACTIVITY="$(date '+%Y-%m-%d'): Bidirectional sync completed (Branch: $BRANCH)"
+            sed -i "/## 🔄 Recent Activity Log/a\\$((NEW_COUNT)). **$ACTIVITY**" "$MEMORY_FILE"
+            
+            echo "✓ Metadata updated"
+          fi
+          
+          # Create sync log
+          mkdir -p .infinity/logs
+          LOG_FILE=".infinity/logs/sync-$(date '+%Y%m%d-%H%M%S').log"
+          cat > "$LOG_FILE" << EOF
+          Sync Log - $TIMESTAMP
+          ═══════════════════════════════════════
+          Branch: $BRANCH
+          Event: ${{ github.event_name }}
+          Pull Status: ${{ steps.pull.outputs.status }}
+          Push Status: ${{ steps.push.outputs.status }}
+          Behind: ${{ needs.detect-changes.outputs.behind_count }}
+          Ahead: ${{ needs.detect-changes.outputs.ahead_count }}
+          Workflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          ═══════════════════════════════════════
+EOF
+          
+          echo "✓ Sync log created: $LOG_FILE"
+      
+      - name: 💾 Commit Metadata Updates
+        if: always()
+        run: |
+          if [[ -n "$(git status --porcelain)" ]]; then
+            git add .infinity/
+            git commit -m "chore: update sync metadata [skip ci]" || true
+            git push origin ${{ github.event.inputs.target_branch || github.ref_name }} || true
+            echo "✓ Metadata committed"
+          fi
+      
+      - name: ✅ Sync Complete
+        run: |
+          echo "════════════════════════════════════════════════════════"
+          echo "✅ BIDIRECTIONAL SYNC COMPLETE"
+          echo ""
+          echo "📊 Summary:"
+          echo "  • Branch: ${{ github.event.inputs.target_branch || github.ref_name }}"
+          echo "  • Pull Status: ${{ steps.pull.outputs.status }}"
+          echo "  • Push Status: ${{ steps.push.outputs.status }}"
+          echo "  • Synced At: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+          echo "════════════════════════════════════════════════════════"
+      
+      - name: 🚨 Handle Sync Failure
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const body = `## 🚨 Bidirectional Sync Failed
+            
+            **Branch:** \`${{ github.event.inputs.target_branch || github.ref_name }}\`
+            **Workflow:** [View Run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+            **Event:** ${{ github.event_name }}
+            **Timestamp:** ${new Date().toISOString()}
+            
+            ### Status
+            - Pull: ${{ steps.pull.outputs.status }}
+            - Push: ${{ steps.push.outputs.status }}
+            
+            ### Metrics
+            - Behind: ${{ needs.detect-changes.outputs.behind_count }} commits
+            - Ahead: ${{ needs.detect-changes.outputs.ahead_count }} commits
+            
+            ### Action Required
+            Please review the workflow logs and resolve any conflicts manually.
+            
+            ---
+            *Auto-generated by Bidirectional Sync workflow*`;
+            
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `🚨 Sync Failed: ${context.ref}`,
+              body: body,
+              labels: ['sync-failure', 'automated']
+            });
+
+  health-check:
+    name: Sync Health Check
+    needs: bidirectional-sync
+    if: always()
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: 📊 Report Health Status
+        run: |
+          echo "::group::Sync Health Report"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🏥 Bidirectional Sync Health Check"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "Status: ${{ needs.bidirectional-sync.result }}"
+          echo "Timestamp: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "::endgroup::"
+          
+          if [[ "${{ needs.bidirectional-sync.result }}" != "success" ]]; then
+            echo "::warning::Sync health check indicates issues"
+          else
+            echo "::notice::All systems operational"
+          fi
